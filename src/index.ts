@@ -8,10 +8,13 @@ import { randomBytes } from 'crypto';
 import { basename } from 'path';
 import { createApiClient } from './client.js';
 import { getOrCreateMachineId } from './machine.js';
+import { readAndEncodeFile, writeDecodedFile, computeMd5 } from './files.js';
+import { readFileSync, existsSync } from 'fs';
+import { resolve } from 'path';
 
 const server = new McpServer({
   name: 'forever',
-  version: '0.3.0',
+  version: '0.4.0',
 });
 
 const machineId = getOrCreateMachineId();
@@ -356,6 +359,445 @@ server.tool(
             text: `Search failed: ${err.message}`,
           },
         ],
+      };
+    }
+  },
+);
+
+// --- File Storage & Sharing Tools ---
+
+function resolveFilePath(filePath: string): string {
+  return resolve(process.cwd(), filePath);
+}
+
+server.tool(
+  'memory_store_file',
+  'Store a file in Forever for cross-machine access',
+  {
+    filePath: z
+      .string()
+      .describe('Path to the file to store (relative or absolute)'),
+    project: z
+      .string()
+      .optional()
+      .describe('Project name (auto-detected from git if omitted)'),
+  },
+  async ({ filePath, project }) => {
+    const api = createApiClient({ timeout: 30000 });
+    if (!api) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
+          },
+        ],
+      };
+    }
+
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
+          },
+        ],
+      };
+    }
+
+    const absPath = resolveFilePath(filePath);
+    if (!existsSync(absPath)) {
+      return {
+        content: [
+          { type: 'text' as const, text: `File not found: ${absPath}` },
+        ],
+      };
+    }
+
+    try {
+      const { content, hash, size } = readAndEncodeFile(absPath);
+      const res = await api.post('/files/store', {
+        project: resolvedProject,
+        filePath,
+        content,
+        contentHash: hash,
+        machineId,
+        sessionId,
+      });
+
+      const dedup = res.data.deduplicated ? ' (unchanged, skipped)' : '';
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Stored "${filePath}" (${size} bytes)${dedup}`,
+          },
+        ],
+      };
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message;
+      return {
+        content: [
+          { type: 'text' as const, text: `Failed to store file: ${msg}` },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  'memory_restore_file',
+  'Restore a file from Forever to the local disk',
+  {
+    filePath: z.string().describe('Path of the file to restore'),
+    project: z
+      .string()
+      .optional()
+      .describe('Project name (auto-detected from git if omitted)'),
+  },
+  async ({ filePath, project }) => {
+    const api = createApiClient({ timeout: 30000 });
+    if (!api) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
+          },
+        ],
+      };
+    }
+
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
+          },
+        ],
+      };
+    }
+
+    try {
+      const res = await api.get('/files/latest', {
+        params: { project: resolvedProject, filePath },
+      });
+
+      if (!res.data) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `No stored version found for "${filePath}"`,
+            },
+          ],
+        };
+      }
+
+      const absPath = resolveFilePath(filePath);
+      writeDecodedFile(absPath, res.data.content);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Restored "${filePath}" (hash: ${res.data.contentHash})`,
+          },
+        ],
+      };
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message;
+      return {
+        content: [
+          { type: 'text' as const, text: `Failed to restore file: ${msg}` },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  'memory_share_file',
+  'Mark a file for auto-sync across machines (also stores it immediately)',
+  {
+    filePath: z.string().describe('Path to the file to share'),
+    project: z
+      .string()
+      .optional()
+      .describe('Project name (auto-detected from git if omitted)'),
+  },
+  async ({ filePath, project }) => {
+    const api = createApiClient({ timeout: 30000 });
+    if (!api) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
+          },
+        ],
+      };
+    }
+
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
+          },
+        ],
+      };
+    }
+
+    const absPath = resolveFilePath(filePath);
+    if (!existsSync(absPath)) {
+      return {
+        content: [
+          { type: 'text' as const, text: `File not found: ${absPath}` },
+        ],
+      };
+    }
+
+    try {
+      // Store the file first
+      const { content, hash, size } = readAndEncodeFile(absPath);
+      await api.post('/files/store', {
+        project: resolvedProject,
+        filePath,
+        content,
+        contentHash: hash,
+        machineId,
+        sessionId,
+      });
+
+      // Mark as shared
+      await api.post('/files/share', {
+        project: resolvedProject,
+        filePath,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Shared "${filePath}" (${size} bytes) — will auto-sync across machines`,
+          },
+        ],
+      };
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message;
+      return {
+        content: [
+          { type: 'text' as const, text: `Failed to share file: ${msg}` },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  'memory_unshare_file',
+  'Stop auto-syncing a file across machines',
+  {
+    filePath: z.string().describe('Path of the file to stop sharing'),
+    project: z
+      .string()
+      .optional()
+      .describe('Project name (auto-detected from git if omitted)'),
+  },
+  async ({ filePath, project }) => {
+    const api = createApiClient();
+    if (!api) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
+          },
+        ],
+      };
+    }
+
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
+          },
+        ],
+      };
+    }
+
+    try {
+      await api.post('/files/unshare', {
+        project: resolvedProject,
+        filePath,
+      });
+
+      return {
+        content: [
+          { type: 'text' as const, text: `Stopped sharing "${filePath}"` },
+        ],
+      };
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message;
+      return {
+        content: [
+          { type: 'text' as const, text: `Failed to unshare file: ${msg}` },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  'memory_sync_files',
+  'Sync all shared files for a project — downloads newer versions, uploads local changes',
+  {
+    project: z
+      .string()
+      .optional()
+      .describe('Project name (auto-detected from git if omitted)'),
+  },
+  async ({ project }) => {
+    const api = createApiClient({ timeout: 30000 });
+    if (!api) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
+          },
+        ],
+      };
+    }
+
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
+          },
+        ],
+      };
+    }
+
+    try {
+      // Get list of shared files
+      const sharedRes = await api.get('/files/shared', {
+        params: { project: resolvedProject },
+      });
+      const sharedFiles: Array<{ filePath: string }> = sharedRes.data;
+
+      if (!sharedFiles.length) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `No shared files for "${resolvedProject}"`,
+            },
+          ],
+        };
+      }
+
+      // Build local hash map
+      const localFiles: Array<{
+        filePath: string;
+        contentHash: string;
+        exists: boolean;
+      }> = [];
+      for (const sf of sharedFiles) {
+        const absPath = resolveFilePath(sf.filePath);
+        if (existsSync(absPath)) {
+          const buffer = readFileSync(absPath);
+          localFiles.push({
+            filePath: sf.filePath,
+            contentHash: computeMd5(buffer),
+            exists: true,
+          });
+        } else {
+          localFiles.push({
+            filePath: sf.filePath,
+            contentHash: '',
+            exists: false,
+          });
+        }
+      }
+
+      // Check sync status
+      const syncRes = await api.post('/files/sync', {
+        project: resolvedProject,
+        files: localFiles.map((f) => ({
+          filePath: f.filePath,
+          contentHash: f.contentHash,
+        })),
+      });
+
+      const results: string[] = [];
+      let downloaded = 0;
+      let uploaded = 0;
+      let upToDate = 0;
+
+      for (const file of syncRes.data.files) {
+        const local = localFiles.find((f) => f.filePath === file.filePath);
+
+        if (
+          file.status === 'download_needed' ||
+          (file.status === 'upload_needed' && !local?.exists)
+        ) {
+          // Download from server
+          const latestRes = await api.get('/files/latest', {
+            params: { project: resolvedProject, filePath: file.filePath },
+          });
+          if (latestRes.data) {
+            const absPath = resolveFilePath(file.filePath);
+            writeDecodedFile(absPath, latestRes.data.content);
+            results.push(`↓ ${file.filePath}`);
+            downloaded++;
+          }
+        } else if (file.status === 'upload_needed' && local?.exists) {
+          // Upload to server
+          const { content, hash } = readAndEncodeFile(
+            resolveFilePath(file.filePath),
+          );
+          await api.post('/files/store', {
+            project: resolvedProject,
+            filePath: file.filePath,
+            content,
+            contentHash: hash,
+            machineId,
+            sessionId,
+          });
+          results.push(`↑ ${file.filePath}`);
+          uploaded++;
+        } else {
+          upToDate++;
+        }
+      }
+
+      const summary = [`Synced ${sharedFiles.length} shared file(s):`];
+      if (downloaded) summary.push(`  ${downloaded} downloaded`);
+      if (uploaded) summary.push(`  ${uploaded} uploaded`);
+      if (upToDate) summary.push(`  ${upToDate} up to date`);
+      if (results.length) summary.push('', ...results);
+
+      return {
+        content: [{ type: 'text' as const, text: summary.join('\n') }],
+      };
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message;
+      return {
+        content: [{ type: 'text' as const, text: `Sync failed: ${msg}` }],
       };
     }
   },

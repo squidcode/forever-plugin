@@ -55,7 +55,9 @@ export function saveMachineConfig(config: MachineConfig) {
   });
 }
 
-export function createApiClient(): AxiosInstance | null {
+export function createApiClient(options?: {
+  timeout?: number;
+}): AxiosInstance | null {
   const creds = getCredentials();
   if (!creds) return null;
 
@@ -65,6 +67,6 @@ export function createApiClient(): AxiosInstance | null {
       Authorization: `Bearer ${creds.token}`,
       'Content-Type': 'application/json',
     },
-    timeout: 10000,
+    timeout: options?.timeout ?? 10000,
   });
 }

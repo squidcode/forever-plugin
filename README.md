@@ -2,7 +2,7 @@
 
 MCP (Model Context Protocol) plugin for [Forever](https://forever.squidcode.com) — a centralized persistent memory layer for Claude Code instances.
 
-Forever lets multiple Claude Code sessions share memory across machines, projects, and time. This plugin connects Claude Code to your Forever server via MCP.
+Forever lets multiple Claude Code sessions share memory and files across machines, projects, and time. This plugin connects Claude Code to your Forever server via MCP.
 
 ## Prerequisites
 
@@ -34,30 +34,41 @@ This registers the plugin as an MCP server that Claude Code will start automatic
 
 ## Tools
 
-The plugin exposes three MCP tools:
+The plugin exposes the following MCP tools:
 
-### `memory_log`
+### Memory Tools
+
+#### `memory_log`
 
 Log an entry to Forever memory.
 
 | Parameter   | Type     | Required | Description                          |
 |-------------|----------|----------|--------------------------------------|
-| `project`   | string   | yes      | Project name or git remote URL       |
+| `project`   | string   | no       | Project name or git remote URL (auto-detected) |
 | `type`      | enum     | yes      | `summary`, `decision`, or `error`    |
 | `content`   | string   | yes      | The content to log                   |
 | `tags`      | string[] | no       | Tags for categorization              |
 | `sessionId` | string   | no       | Session ID for grouping entries      |
 
-### `memory_get_recent`
+#### `memory_get_recent`
 
 Get recent memory entries for a project.
 
 | Parameter | Type   | Required | Description                    |
 |-----------|--------|----------|--------------------------------|
-| `project` | string | yes      | Project name or git remote URL |
+| `project` | string | no       | Project name or git remote URL (auto-detected) |
 | `limit`   | number | no       | Number of entries (default 20) |
 
-### `memory_search`
+#### `memory_get_sessions`
+
+Get recent sessions grouped by session with machine info. Use at startup to detect cross-machine handoffs.
+
+| Parameter | Type   | Required | Description                    |
+|-----------|--------|----------|--------------------------------|
+| `project` | string | no       | Project name or git remote URL (auto-detected) |
+| `limit`   | number | no       | Number of sessions (default 10) |
+
+#### `memory_search`
 
 Search memory entries across projects.
 
@@ -68,11 +79,59 @@ Search memory entries across projects.
 | `type`    | enum   | no       | Filter by entry type   |
 | `limit`   | number | no       | Max results (default 20) |
 
+### File Tools
+
+#### `memory_store_file`
+
+Store a file in Forever for cross-machine access.
+
+| Parameter  | Type   | Required | Description                     |
+|------------|--------|----------|---------------------------------|
+| `filePath` | string | yes      | Path to the file (relative or absolute) |
+| `project`  | string | no       | Project name (auto-detected)    |
+
+#### `memory_restore_file`
+
+Restore a file from Forever to the local disk.
+
+| Parameter  | Type   | Required | Description                     |
+|------------|--------|----------|---------------------------------|
+| `filePath` | string | yes      | Path of the file to restore     |
+| `project`  | string | no       | Project name (auto-detected)    |
+
+#### `memory_share_file`
+
+Mark a file for auto-sync across machines (also stores it immediately).
+
+| Parameter  | Type   | Required | Description                     |
+|------------|--------|----------|---------------------------------|
+| `filePath` | string | yes      | Path to the file to share       |
+| `project`  | string | no       | Project name (auto-detected)    |
+
+#### `memory_unshare_file`
+
+Stop auto-syncing a file across machines.
+
+| Parameter  | Type   | Required | Description                     |
+|------------|--------|----------|---------------------------------|
+| `filePath` | string | yes      | Path of the file to stop sharing |
+| `project`  | string | no       | Project name (auto-detected)    |
+
+#### `memory_sync_files`
+
+Sync all shared files for a project — downloads newer versions, uploads local changes.
+
+| Parameter | Type   | Required | Description                  |
+|-----------|--------|----------|------------------------------|
+| `project` | string | no       | Project name (auto-detected) |
+
 ## How It Works
 
 - The plugin runs as an MCP stdio server, started by Claude Code on demand.
 - Each machine gets a unique ID (stored in `~/.forever/machine.json`) for tracking which machine produced each memory entry.
 - All API calls are authenticated via JWT token obtained during login.
+- Files up to 1MB are supported; binary files are automatically base64-encoded.
+- File deduplication uses MD5 hashing — unchanged files are not re-uploaded.
 
 ## Development
 
