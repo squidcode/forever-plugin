@@ -11,7 +11,7 @@ import { getOrCreateMachineId } from './machine.js';
 
 const server = new McpServer({
   name: 'forever',
-  version: '0.2.0',
+  version: '0.3.0',
 });
 
 const machineId = getOrCreateMachineId();
@@ -197,6 +197,99 @@ server.tool(
           {
             type: 'text' as const,
             text: `Failed to fetch: ${err.message}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
+  'memory_get_sessions',
+  'Get recent sessions for a project, grouped by session with machine info. Use at startup to detect cross-machine handoffs.',
+  {
+    project: z
+      .string()
+      .optional()
+      .describe(
+        'Project name or git remote URL (auto-detected from git if omitted)',
+      ),
+    limit: z
+      .number()
+      .optional()
+      .default(10)
+      .describe('Number of recent sessions to fetch'),
+  },
+  async ({ project, limit }) => {
+    const api = createApiClient();
+    if (!api) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
+          },
+        ],
+      };
+    }
+
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
+          },
+        ],
+      };
+    }
+
+    try {
+      const res = await api.get('/logs/sessions', {
+        params: { project: resolvedProject, machineId, limit },
+      });
+      const { sessions, hasRemoteActivity } = res.data;
+
+      if (!sessions.length) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `No previous sessions found for "${resolvedProject}".`,
+            },
+          ],
+        };
+      }
+
+      const lines: string[] = [];
+
+      if (hasRemoteActivity) {
+        lines.push(
+          '⚡ REMOTE ACTIVITY DETECTED — Sessions from other machines found for this project.\n',
+        );
+      }
+
+      for (const s of sessions) {
+        const machine = s.machineName || 'unknown';
+        const remote = s.isRemote ? ' [REMOTE]' : ' [LOCAL]';
+        const branch = s.gitBranch ? ` on ${s.gitBranch}` : '';
+        const commit = s.gitCommit ? ` @ ${s.gitCommit}` : '';
+        lines.push(`## Session ${s.sessionId}${remote}`);
+        lines.push(`Machine: ${machine}${branch}${commit}`);
+        lines.push(`Time: ${s.startedAt} → ${s.endedAt} (${s.logCount} logs)`);
+        if (s.directory) lines.push(`Directory: ${s.directory}`);
+        if (s.summary) lines.push(`Summary: ${s.summary}`);
+        lines.push('');
+      }
+
+      return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+    } catch (err: any) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to fetch sessions: ${err.message}`,
           },
         ],
       };
