@@ -3,21 +3,58 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { execFileSync } from 'child_process';
+import { randomBytes } from 'crypto';
+import { basename } from 'path';
 import { createApiClient } from './client.js';
 import { getOrCreateMachineId } from './machine.js';
 
 const server = new McpServer({
   name: 'forever',
-  version: '0.1.0',
+  version: '0.2.0',
 });
 
 const machineId = getOrCreateMachineId();
+const sessionId = `${Date.now()}-${randomBytes(4).toString('hex')}`;
+
+function git(...args: string[]): string | null {
+  try {
+    return execFileSync('git', args, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function getGitContext() {
+  return {
+    gitBranch: git('rev-parse', '--abbrev-ref', 'HEAD'),
+    gitCommit: git('rev-parse', '--short', 'HEAD'),
+    directory: process.cwd(),
+  };
+}
+
+function resolveProject(explicit?: string): string | null {
+  if (explicit) return explicit;
+  const remote = git('remote', 'get-url', 'origin');
+  if (remote) return remote;
+  const dir = process.cwd();
+  if (dir && dir !== '/') return basename(dir);
+  return null;
+}
 
 server.tool(
   'memory_log',
   'Log an entry to Forever memory (summary, decision, or error)',
   {
-    project: z.string().describe('Project name or git remote URL'),
+    project: z
+      .string()
+      .optional()
+      .describe(
+        'Project name or git remote URL (auto-detected from git if omitted)',
+      ),
     type: z
       .enum(['summary', 'decision', 'error'])
       .describe('Type of memory entry'),
@@ -26,32 +63,55 @@ server.tool(
       .array(z.string())
       .optional()
       .describe('Optional tags for categorization'),
-    sessionId: z.string().optional().describe('Session ID for grouping'),
+    sessionId: z
+      .string()
+      .optional()
+      .describe('Session ID for grouping (auto-generated if omitted)'),
   },
-  async ({ project, type, content, tags, sessionId }) => {
+  async ({ project, type, content, tags, sessionId: explicitSessionId }) => {
     const api = createApiClient();
     if (!api) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: 'Not authenticated. Run: forever-plugin login',
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
           },
         ],
       };
     }
 
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
+          },
+        ],
+      };
+    }
+
+    const gitContext = getGitContext();
+
     try {
       await api.post('/logs', {
-        project,
+        project: resolvedProject,
         type,
         content,
         machineId,
         tags,
-        sessionId,
+        sessionId: explicitSessionId || sessionId,
+        ...gitContext,
       });
       return {
-        content: [{ type: 'text' as const, text: `Logged ${type} entry.` }],
+        content: [
+          {
+            type: 'text' as const,
+            text: `Logged ${type} entry for "${resolvedProject}".`,
+          },
+        ],
       };
     } catch (err: any) {
       return {
@@ -70,7 +130,12 @@ server.tool(
   'memory_get_recent',
   'Get recent memory entries for a project',
   {
-    project: z.string().describe('Project name or git remote URL'),
+    project: z
+      .string()
+      .optional()
+      .describe(
+        'Project name or git remote URL (auto-detected from git if omitted)',
+      ),
     limit: z
       .number()
       .optional()
@@ -84,7 +149,19 @@ server.tool(
         content: [
           {
             type: 'text' as const,
-            text: 'Not authenticated. Run: forever-plugin login',
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
+          },
+        ],
+      };
+    }
+
+    const resolvedProject = resolveProject(project);
+    if (!resolvedProject) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Could not detect project. Please specify a project name.',
           },
         ],
       };
@@ -92,7 +169,7 @@ server.tool(
 
     try {
       const res = await api.get('/logs/recent', {
-        params: { project, limit },
+        params: { project: resolvedProject, limit },
       });
       const logs = res.data;
       if (!logs.length) {
@@ -100,7 +177,7 @@ server.tool(
           content: [
             {
               type: 'text' as const,
-              text: `No memory entries found for project "${project}".`,
+              text: `No memory entries found for project "${resolvedProject}".`,
             },
           ],
         };
@@ -146,7 +223,7 @@ server.tool(
         content: [
           {
             type: 'text' as const,
-            text: 'Not authenticated. Run: forever-plugin login',
+            text: 'Not authenticated. Run: npx @squidcode/forever-plugin login',
           },
         ],
       };
