@@ -5,16 +5,16 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { execFileSync } from 'child_process';
 import { randomBytes } from 'crypto';
-import { basename } from 'path';
+import { basename, resolve, join } from 'path';
+import { homedir } from 'os';
+import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'fs';
 import { createApiClient } from './client.js';
 import { getOrCreateMachineId } from './machine.js';
 import { readAndEncodeFile, writeDecodedFile, computeMd5 } from './files.js';
-import { readFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
 
 const server = new McpServer({
   name: 'forever',
-  version: '0.4.0',
+  version: '0.6.0',
 });
 
 const machineId = getOrCreateMachineId();
@@ -803,40 +803,145 @@ server.tool(
   },
 );
 
+// CLAUDE.md instructions injection
+const FOREVER_MARKER = '## Forever Memory';
+const FOREVER_INSTRUCTIONS = `
+## Forever Memory
+
+Use the Forever MCP tools to maintain persistent memory across sessions:
+
+- At the start of sessions, use \`memory_get_recent\` to recall recent context for the current project
+- At the end of each session, use \`memory_log\` with type "summary" to save what was accomplished
+- Log important architectural or design decisions with type "decision"
+- Log errors and their solutions with type "error"
+- Use \`memory_search\` to find relevant past context when working on related problems
+- Always include the project name (repo name or git remote URL) when logging
+
+### File Storage & Sharing
+
+- When user says "store <file>" or "remember <file>", use \`memory_store_file\`
+- When user says "restore <file>", use \`memory_restore_file\`
+- When user says "share <file>", use \`memory_share_file\` for auto-sync
+- When user says "unshare <file>", use \`memory_unshare_file\`
+- At session start, call \`memory_sync_files\` to sync shared files
+- Files up to 1MB supported; binary files handled automatically
+- Only changed files are uploaded (MD5 dedup)
+
+### Cross-Machine Handoff
+
+- **At startup**: Always call \`memory_get_sessions\` to check for recent sessions from other machines. If remote activity is detected, review those sessions to understand what was done elsewhere and continue seamlessly.
+- **Manual handoff**: When the user asks to "pull from forever", "check other machines", or "what happened on my other machine", call \`memory_get_sessions\` and summarize remote sessions.
+- **Periodic awareness**: Before starting a new major task, check \`memory_get_sessions\` for any new remote activity on the current project since the session began.
+- **Session continuity**: When continuing work from another machine, acknowledge what was done there and pick up where it left off.
+`;
+
+function ensureClaudeMdInstructions(force = false): 'added' | 'exists' {
+  const claudeDir = join(homedir(), '.claude');
+  const claudeMdPath = join(claudeDir, 'CLAUDE.md');
+
+  // Read existing file if present
+  let existing = '';
+  if (existsSync(claudeMdPath)) {
+    existing = readFileSync(claudeMdPath, 'utf-8');
+    if (!force && existing.includes(FOREVER_MARKER)) {
+      return 'exists';
+    }
+  } else {
+    if (!existsSync(claudeDir)) {
+      mkdirSync(claudeDir, { recursive: true });
+    }
+  }
+
+  // Append instructions
+  const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+  appendFileSync(claudeMdPath, separator + FOREVER_INSTRUCTIONS);
+  return 'added';
+}
+
+// Install subcommand — inject CLAUDE.md instructions
+if (process.argv[2] === 'install') {
+  const force = process.argv.includes('--force');
+  const result = ensureClaudeMdInstructions(force);
+  if (result === 'added') {
+    console.log('Forever instructions added to ~/.claude/CLAUDE.md');
+  } else {
+    console.log(
+      'Forever instructions already present in ~/.claude/CLAUDE.md (use --force to append anyway)',
+    );
+  }
+  process.exit(0);
+}
+
 // Login subcommand
 if (process.argv[2] === 'login') {
-  const readline = await import('readline');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  const ask = (q: string): Promise<string> =>
-    new Promise((resolve) => rl.question(q, resolve));
+  const SERVER_URL = 'https://forever.squidcode.com';
 
   console.log('Forever Plugin Login\n');
 
-  const DEFAULT_SERVER = 'https://forever.squidcode.com';
-  const serverUrlInput = await ask(`Server URL [${DEFAULT_SERVER}]: `);
-  const serverUrl = serverUrlInput.trim() || DEFAULT_SERVER;
-  const email = await ask('Email: ');
-  const password = await ask('Password: ');
-
   try {
     const { default: axios } = await import('axios');
-    const res = await axios.post(
-      `${serverUrl.replace(/\/$/, '')}/api/auth/login`,
-      {
-        email,
-        password,
-      },
-    );
 
-    const { saveCredentials } = await import('./client.js');
-    saveCredentials({ serverUrl, token: res.data.access_token });
-    console.log(
-      '\nAuthenticated! Credentials saved to ~/.forever/credentials.json',
-    );
+    // Request a device code
+    const codeRes = await axios.post(`${SERVER_URL}/api/auth/device/code`);
+    const { device_code, user_code, expires_in } = codeRes.data;
+
+    const authUrl = `${SERVER_URL}/auth/device?code=${user_code}`;
+
+    console.log('Your verification code:\n');
+    console.log(`  ${user_code}\n`);
+    console.log(`Open this URL to authorize:\n  ${authUrl}\n`);
+
+    // Try to open browser automatically
+    try {
+      const { execFileSync } = await import('child_process');
+      const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+      execFileSync(cmd, [authUrl], { stdio: 'ignore' });
+    } catch {
+      // Browser open failed — user can open manually
+    }
+
+    console.log('Waiting for authorization...');
+
+    const deadline = Date.now() + expires_in * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5000));
+
+      try {
+        const tokenRes = await axios.post(
+          `${SERVER_URL}/api/auth/device/token`,
+          { device_code },
+        );
+
+        const { saveCredentials } = await import('./client.js');
+        saveCredentials({
+          serverUrl: SERVER_URL,
+          token: tokenRes.data.access_token,
+        });
+        console.log(
+          '\nAuthenticated! Credentials saved to ~/.forever/credentials.json',
+        );
+
+        // Inject CLAUDE.md instructions if not already present
+        if (ensureClaudeMdInstructions() === 'added') {
+          console.log('Forever instructions added to ~/.claude/CLAUDE.md');
+        }
+
+        process.exit(0);
+      } catch (err: any) {
+        const msg = err.response?.data?.message;
+        if (msg === 'authorization_pending') {
+          continue;
+        }
+        if (msg === 'expired_token') {
+          console.error('\nCode expired. Please run login again.');
+          process.exit(1);
+        }
+        throw err;
+      }
+    }
+
+    console.error('\nCode expired. Please run login again.');
+    process.exit(1);
   } catch (err: any) {
     console.error(
       '\nLogin failed:',
@@ -844,9 +949,32 @@ if (process.argv[2] === 'login') {
     );
     process.exit(1);
   }
+}
 
-  rl.close();
+// Help / unknown subcommand
+if (process.argv[2] === 'help' || process.argv[2] === '--help') {
+  console.log(`Forever Plugin v0.6.0 — Claude Memory System
+
+Usage: npx @squidcode/forever-plugin <command>
+
+Commands:
+  login              Authenticate with Forever (device auth flow)
+  install            Add Forever instructions to ~/.claude/CLAUDE.md
+  install --force    Add instructions even if already present
+  help               Show this help message
+
+Without a command, starts the MCP server (used by Claude Code).
+
+Setup:
+  1. npx @squidcode/forever-plugin login
+  2. claude mcp add forever -- npx @squidcode/forever-plugin`);
   process.exit(0);
+}
+
+if (process.argv[2]) {
+  console.error(`Unknown command: ${process.argv[2]}`);
+  console.error('Run with "help" to see available commands.');
+  process.exit(1);
 }
 
 // Start MCP server

@@ -17,12 +17,16 @@ Forever lets multiple Claude Code sessions share memory and files across machine
 npx @squidcode/forever-plugin login
 ```
 
-You'll be prompted for:
-- **Server URL**: `https://forever.squidcode.com`
-- **Email**: your registered email
-- **Password**: your password
+This opens your browser for authentication (similar to `gh auth login`):
+
+1. A verification code is displayed in your terminal (e.g. `ABCD-EF23`)
+2. Your browser opens to `https://forever.squidcode.com/auth/device`
+3. Log in if needed, then confirm the code matches and click **Authorize**
+4. The plugin receives your token automatically — no passwords in the terminal
 
 Credentials are saved to `~/.forever/credentials.json` (mode 0600).
+
+On successful login, Forever instructions are automatically added to `~/.claude/CLAUDE.md` so Claude Code knows how to use the memory tools.
 
 ### 2. Add to Claude Code
 
@@ -31,6 +35,21 @@ claude mcp add forever -- npx @squidcode/forever-plugin
 ```
 
 This registers the plugin as an MCP server that Claude Code will start automatically.
+
+## CLI Commands
+
+```
+npx @squidcode/forever-plugin <command>
+```
+
+| Command            | Description                                            |
+|--------------------|--------------------------------------------------------|
+| `login`            | Authenticate with Forever (device auth flow)           |
+| `install`          | Add Forever instructions to `~/.claude/CLAUDE.md`      |
+| `install --force`  | Add instructions even if already present               |
+| `help`             | Show help message                                      |
+
+Without a command, the plugin starts in MCP server mode (used by Claude Code internally).
 
 ## Tools
 
