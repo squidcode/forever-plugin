@@ -14,7 +14,7 @@ import { readAndEncodeFile, writeDecodedFile, computeMd5 } from './files.js';
 
 const server = new McpServer({
   name: 'forever',
-  version: '0.6.0',
+  version: '0.7.0',
 });
 
 const machineId = getOrCreateMachineId();
@@ -951,9 +951,92 @@ if (process.argv[2] === 'login') {
   }
 }
 
+// Log subcommand — CLI-based memory logging
+if (process.argv[2] === 'log') {
+  const args = process.argv.slice(3);
+  if (args.length === 0) {
+    console.error(
+      `Usage: npx @squidcode/forever-plugin log <data>
+
+Examples:
+  npx @squidcode/forever-plugin log "deployed v2.1 to production"
+  npx @squidcode/forever-plugin log '{"type":"decision","content":"chose postgres","tags":["db"]}'`,
+    );
+    process.exit(1);
+  }
+
+  const data = args.join(' ');
+  let type: 'summary' | 'decision' | 'error' = 'summary';
+  let content = data;
+  let tags: string[] | undefined;
+  let project: string | undefined;
+  let explicitSessionId: string | undefined;
+
+  try {
+    const parsed = JSON.parse(data);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      typeof parsed.content === 'string'
+    ) {
+      content = parsed.content;
+      if (
+        parsed.type === 'summary' ||
+        parsed.type === 'decision' ||
+        parsed.type === 'error'
+      ) {
+        type = parsed.type;
+      }
+      if (Array.isArray(parsed.tags)) tags = parsed.tags;
+      if (typeof parsed.project === 'string') project = parsed.project;
+      if (typeof parsed.sessionId === 'string')
+        explicitSessionId = parsed.sessionId;
+    }
+  } catch {
+    // Not JSON — use raw string as content
+  }
+
+  const api = createApiClient();
+  if (!api) {
+    console.error(
+      'Not authenticated. Run: npx @squidcode/forever-plugin login',
+    );
+    process.exit(1);
+  }
+
+  const resolvedProject = resolveProject(project);
+  if (!resolvedProject) {
+    console.error(
+      'Could not detect project. Pass "project" in JSON or run from a git repo.',
+    );
+    process.exit(1);
+  }
+
+  const gitContext = getGitContext();
+
+  try {
+    await api.post('/logs', {
+      project: resolvedProject,
+      type,
+      content,
+      machineId,
+      tags,
+      sessionId: explicitSessionId || sessionId,
+      ...gitContext,
+    });
+    console.error(`Logged ${type} entry for "${resolvedProject}".`);
+    process.exit(0);
+  } catch (err: any) {
+    console.error(
+      `Failed to log: ${err.response?.data?.message || err.message}`,
+    );
+    process.exit(1);
+  }
+}
+
 // Help / unknown subcommand
 if (process.argv[2] === 'help' || process.argv[2] === '--help') {
-  console.log(`Forever Plugin v0.6.0 — Claude Memory System
+  console.log(`Forever Plugin v0.7.0 — Claude Memory System
 
 Usage: npx @squidcode/forever-plugin <command>
 
@@ -961,9 +1044,14 @@ Commands:
   login              Authenticate with Forever (device auth flow)
   install            Add Forever instructions to ~/.claude/CLAUDE.md
   install --force    Add instructions even if already present
+  log <data>         Log a memory entry from the CLI
   help               Show this help message
 
 Without a command, starts the MCP server (used by Claude Code).
+
+Log examples:
+  npx @squidcode/forever-plugin log "deployed v2.1 to production"
+  npx @squidcode/forever-plugin log '{"type":"decision","content":"chose postgres","tags":["db"]}'
 
 Setup:
   1. npx @squidcode/forever-plugin login

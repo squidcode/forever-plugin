@@ -47,9 +47,24 @@ npx @squidcode/forever-plugin <command>
 | `login`            | Authenticate with Forever (device auth flow)           |
 | `install`          | Add Forever instructions to `~/.claude/CLAUDE.md`      |
 | `install --force`  | Add instructions even if already present               |
+| `log <data>`       | Log a memory entry from the CLI (see below)            |
 | `help`             | Show help message                                      |
 
 Without a command, the plugin starts in MCP server mode (used by Claude Code internally).
+
+### `log` command
+
+Log memory entries from any script or tool — no MCP required.
+
+```bash
+# Plain text → logged as type "summary"
+npx @squidcode/forever-plugin log "deployed v2.1 to production"
+
+# JSON → extract type, content, tags, project, sessionId
+npx @squidcode/forever-plugin log '{"type":"decision","content":"chose postgres","tags":["db"]}'
+```
+
+Plain text is logged as a `summary` entry. JSON input with a `content` field can specify `type` (`summary`, `decision`, `error`), `tags`, `project`, and `sessionId`. Project, machine ID, and git context are auto-detected.
 
 ## Tools
 
