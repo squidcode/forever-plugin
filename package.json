@@ -1,6 +1,6 @@
 {
   "name": "@squidcode/forever-plugin",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "MCP plugin for Forever - Claude Memory System",
   "type": "module",
   "bin": {

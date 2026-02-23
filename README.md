@@ -48,6 +48,7 @@ npx @squidcode/forever-plugin <command>
 | `install`          | Add Forever instructions to `~/.claude/CLAUDE.md`      |
 | `install --force`  | Add instructions even if already present               |
 | `log <data>`       | Log a memory entry from the CLI (see below)            |
+| `search <query>`   | Search memory entries (see below)                      |
 | `help`             | Show help message                                      |
 
 Without a command, the plugin starts in MCP server mode (used by Claude Code internally).
@@ -65,6 +66,21 @@ npx @squidcode/forever-plugin log '{"type":"decision","content":"chose postgres"
 ```
 
 Plain text is logged as a `summary` entry. JSON input with a `content` field can specify `type` (`summary`, `decision`, `error`), `tags`, `project`, and `sessionId`. Project, machine ID, and git context are auto-detected.
+
+### `search` command
+
+Search memory entries from the CLI.
+
+```bash
+npx @squidcode/forever-plugin search "postgres migration"
+npx @squidcode/forever-plugin search "auth" --type decision --limit 5
+```
+
+| Option              | Description                              |
+|---------------------|------------------------------------------|
+| `--project <name>`  | Filter by project (auto-detected if omitted) |
+| `--type <type>`     | Filter by type (`summary`, `decision`, `error`) |
+| `--limit <n>`       | Max results (default 20)                 |
 
 ## Tools
 

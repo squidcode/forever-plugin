@@ -14,7 +14,7 @@ import { readAndEncodeFile, writeDecodedFile, computeMd5 } from './files.js';
 
 const server = new McpServer({
   name: 'forever',
-  version: '0.7.0',
+  version: '0.8.0',
 });
 
 const machineId = getOrCreateMachineId();
@@ -951,6 +951,82 @@ if (process.argv[2] === 'login') {
   }
 }
 
+// Search subcommand — CLI-based memory search
+if (process.argv[2] === 'search') {
+  const args = process.argv.slice(3);
+
+  // Parse flags
+  let project: string | undefined;
+  let type: string | undefined;
+  let limit = 20;
+  const queryParts: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--project' && args[i + 1]) {
+      project = args[++i];
+    } else if (args[i] === '--type' && args[i + 1]) {
+      type = args[++i];
+    } else if (args[i] === '--limit' && args[i + 1]) {
+      limit = parseInt(args[++i], 10) || 20;
+    } else {
+      queryParts.push(args[i]);
+    }
+  }
+
+  const query = queryParts.join(' ');
+  if (!query) {
+    console.error(
+      `Usage: npx @squidcode/forever-plugin search <query> [options]
+
+Options:
+  --project <name>   Filter by project (auto-detected if omitted)
+  --type <type>      Filter by type (summary, decision, error)
+  --limit <n>        Max results (default 20)
+
+Examples:
+  npx @squidcode/forever-plugin search "postgres migration"
+  npx @squidcode/forever-plugin search "auth" --type decision --limit 5`,
+    );
+    process.exit(1);
+  }
+
+  const api = createApiClient();
+  if (!api) {
+    console.error(
+      'Not authenticated. Run: npx @squidcode/forever-plugin login',
+    );
+    process.exit(1);
+  }
+
+  try {
+    const params: Record<string, string | number> = { query, limit };
+    const resolvedProject = resolveProject(project);
+    if (resolvedProject) params.project = resolvedProject;
+    if (type) params.type = type;
+
+    const res = await api.get('/logs/search', { params });
+    const logs = res.data;
+
+    if (!logs.length) {
+      console.error(`No results for "${query}".`);
+      process.exit(0);
+    }
+
+    for (const log of logs) {
+      const tags = log.tags?.length ? ` [${log.tags.join(', ')}]` : '';
+      console.log(`[${log.type}] ${log.project} - ${log.createdAt}${tags}`);
+      console.log(log.content);
+      console.log('---');
+    }
+    process.exit(0);
+  } catch (err: any) {
+    console.error(
+      `Search failed: ${err.response?.data?.message || err.message}`,
+    );
+    process.exit(1);
+  }
+}
+
 // Log subcommand — CLI-based memory logging
 if (process.argv[2] === 'log') {
   const args = process.argv.slice(3);
@@ -1036,7 +1112,7 @@ Examples:
 
 // Help / unknown subcommand
 if (process.argv[2] === 'help' || process.argv[2] === '--help') {
-  console.log(`Forever Plugin v0.7.0 — Claude Memory System
+  console.log(`Forever Plugin v0.8.0 — Claude Memory System
 
 Usage: npx @squidcode/forever-plugin <command>
 
@@ -1045,6 +1121,7 @@ Commands:
   install            Add Forever instructions to ~/.claude/CLAUDE.md
   install --force    Add instructions even if already present
   log <data>         Log a memory entry from the CLI
+  search <query>     Search memory entries
   help               Show this help message
 
 Without a command, starts the MCP server (used by Claude Code).
@@ -1052,6 +1129,10 @@ Without a command, starts the MCP server (used by Claude Code).
 Log examples:
   npx @squidcode/forever-plugin log "deployed v2.1 to production"
   npx @squidcode/forever-plugin log '{"type":"decision","content":"chose postgres","tags":["db"]}'
+
+Search examples:
+  npx @squidcode/forever-plugin search "postgres migration"
+  npx @squidcode/forever-plugin search "auth" --type decision --limit 5
 
 Setup:
   1. npx @squidcode/forever-plugin login
